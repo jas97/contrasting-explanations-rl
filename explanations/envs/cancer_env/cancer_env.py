@@ -73,16 +73,12 @@ class EnvCancer(gym.Env):
         P_star_new = np.sum(self.state[1:])
 
         # reward = self.dose_penalty[0] * (P_star - P_star_new) - self.dose_penalty[1] * C_new
-        reward = -self.dose_penalty[0] * 0.1 * P_star_new - self.dose_penalty[1] * C_new
+        reward = -self.dose_penalty[0] * P_star_new - self.dose_penalty[1] * C_new
         info = {}
 
         self.steps_elapsed += 1
 
         done = self.is_done()
-
-        # if done:
-        #     if P < 0.5:
-        #         reward = +10
 
         return next_state, reward, done, info
 
