@@ -17,12 +17,12 @@ class DrivingSimulator(gym.Env):
         self.init_lane_non_autonomous = 2
         self.goal_lane = 2
         self.lane_width = 10
-        self.car_length = 12
+        self.car_length = 10
 
-        self.init_vel = 40
-        self.max_velocity = 60
+        self.init_vel = 15
+        self.max_velocity = 20
         self.steering_range = [-30, 30]
-        self.max_timesteps = 100
+        self.max_timesteps = 30
         self.steps_elapsed = 0
         self.threshold = 0.05
         self.scaler = None
@@ -53,16 +53,29 @@ class DrivingSimulator(gym.Env):
         self.observation_space = gym.spaces.Box(low=np.array([0, 0, -1, 0, -1, 0, 0, -1, 0, -1]),
                                                 high=np.array([self.lane_width*3, 1000, 1, self.max_velocity, 1, self.lane_width*3, 1000, 1, self.max_velocity, 1]),
                                                 shape=(10, ))
-        self.action_space = gym.spaces.Box(low=np.array([-1, -0.2]), high=np.array([1, 0.2]), shape=(2, ))
+
+        self.action_space = gym.spaces.Discrete(5) # discretized action space
 
     def step(self, action):
-        angle, acc = action
-        angle = self.angle_scaler.inverse_transform([[angle]]).item()
+        # angle, acc = action
+        # angle = self.angle_scaler.inverse_transform([[angle]]).item()
+        angle, acc = 0, 1
+        if action == 0:
+            acc = 1.1 # increase speed 10%
+        elif action == 1:
+            acc = 0.9
+        elif action == 2:
+            angle = +3
+        elif action == 3:
+            angle = -3
+        elif action == 4:  # do nothing
+            angle = 0
+            acc = 1
 
         self.agent_state = self.state[0:5]
         self.nonautonomous_state = self.state[5:]
         self.agent_state, valid = self.update_car_state(self.agent_state, angle, acc)
-        self.nonautonomous_state, _ = self.update_car_state(self.nonautonomous_state, 0, 0)
+        self.nonautonomous_state, _ = self.update_car_state(self.nonautonomous_state, 0, 1)
 
         self.agent_y.append(self.agent_state[1])
 
@@ -76,27 +89,38 @@ class DrivingSimulator(gym.Env):
         acc_reward = self.get_acc_reward()
         progress_reward = self.progress()
 
-        reward = self.reward_weights['car_distance'] * car_distance + \
-                 self.reward_weights['goal_distance'] * goal_distance +\
-                 self.reward_weights['dev_from_init_vel'] * dev_from_init_vel + \
-                 self.reward_weights['turn'] * turn_reward + \
-                 self.reward_weights['acc'] * acc_reward +\
-                 self.reward_weights['progress'] * progress_reward
+        reward = - self.reward_weights['car_distance'] * car_distance + \
+                 - self.reward_weights['goal_distance'] * goal_distance +\
+                 - self.reward_weights['dev_from_init_vel'] * dev_from_init_vel + \
+                 - self.reward_weights['turn'] * turn_reward + \
+                 - self.reward_weights['acc'] * acc_reward +\
+                 - self.reward_weights['progress'] * progress_reward
 
         self.merged = self.merged or (goal_distance < self.threshold)
-        done = (self.steps_elapsed > self.max_timesteps) or (car_distance > (1 - self.threshold))
+        done = (self.steps_elapsed >= self.max_timesteps) or (car_distance > (1 - self.threshold))
+
+        if not valid:
+            # print('Left the road')
+            reward = -10
 
         if self.merged:
+            # done = (self.steps_elapsed >= 20) and self.merged
             if self.since_merged == 0:
-                reward = +1
-                print('Merged successfully at step: {} with velocity: {}'.format(self.steps_elapsed, self.state[3]))
+                # done = True
+                reward = 1000
+                # print('Merged successfully at step: {} with velocity: {} and distance to other car: {} y: {} y_non_autonomous: {}'.format(self.steps_elapsed,
+                #                                                                                                                           self.state[3],
+                #                                                                                                                           car_distance,
+                #                                                                                                                           self.state[1],
+                #                                                                                                                           self.state[6]))
 
             self.since_merged += 1
-            if self.steps_elapsed >= 15:  # TODO: fixed episode length
-                done = True
+            # if self.since_merged >= 1:  # TODO: fixed episode length
+            #     print('Driven successfully after merging. X: {}, Speed: {}, Heading: {} '.format(self.state[0], self.state[3], self.state[2]))
+            #     done = True
+            #     reward = +1
 
         if car_distance > (1 - self.threshold):
-            print("Hit the other car")
             reward = -1000
             done = True
 
@@ -109,9 +133,8 @@ class DrivingSimulator(gym.Env):
 
         alpha = self.steering_angle_scaler.inverse_transform([[alpha]]).item()
         theta = self.theta_scaler.inverse_transform([[theta]]).item()
-        valid = True
 
-        vel += vel * acc
+        vel = vel * acc
 
         if vel > self.max_velocity:
             vel = self.max_velocity
@@ -125,7 +148,7 @@ class DrivingSimulator(gym.Env):
         if alpha < -30:
             alpha = -30
 
-        theta += vel/self.car_length * np.tan(math.radians(alpha))
+        theta += (vel/self.car_length) * np.tan(math.radians(alpha))
 
         if theta > 180:
             theta = -180 + (theta % 180)
@@ -135,6 +158,7 @@ class DrivingSimulator(gym.Env):
         x += vel * np.sin(math.radians(theta))
         y += vel * np.cos(math.radians(theta))
 
+        valid = True
         if x < 0:
             valid = False
             x = 0
@@ -152,7 +176,7 @@ class DrivingSimulator(gym.Env):
         nonautonomous_pos = self.nonautonomous_state[0:2]
 
         closeness = self.kernel(agent_pos, nonautonomous_pos)
-        closeness = self.distance_scaler.transform([[closeness]]).item()
+        # closeness = self.distance_scaler.transform([[closeness]]).item()
 
         return closeness  # return closeness
 
@@ -201,15 +225,15 @@ class DrivingSimulator(gym.Env):
         self.merged = False
         self.since_merged = 0
 
-        init_pos = self.lane_width * self.init_lane + self.lane_width/2 + np.random.normal(loc=0, scale=2)
-        init_pos_nonaut = self.lane_width * self.init_lane_non_autonomous + self.lane_width/2 + np.random.normal(loc=0, scale=2)
+        init_pos = self.lane_width * self.init_lane + self.lane_width/2 + np.random.normal(loc=0, scale=1)
+        init_pos_nonaut = self.lane_width * self.init_lane_non_autonomous + self.lane_width/2 + np.random.normal(loc=0, scale=1)
 
         if init_pos > 3 * self.lane_width:
             init_pos = 3 * self.lane_width
         if init_pos_nonaut > 3 * self.lane_width:
             init_pos_nonaut = 3 * self.lane_width
 
-        y_pos = np.random.uniform(0, 10)
+        y_pos = 0 # np.random.uniform(0, 2)
 
         self.agent_state = [init_pos, y_pos, 0, self.init_vel, 0]
         self.nonautonomous_state = [init_pos_nonaut, y_pos, 0, self.init_vel, 0]

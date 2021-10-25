@@ -24,6 +24,8 @@ class ExplainGen():
                                                                                  max_traj_len=max_traj_len,
                                                                                  num_episodes=num_episodes)
 
+
+
         if exp_type == 'all' or exp_type == 'strategies':
             df, feature_schema = get_disagreement_data(pref_trajectories, policy_A, policy_B, env, step=step)
             df.to_csv(self.df_path)
@@ -54,6 +56,8 @@ class ExplainGen():
                                                agent_names=['A', 'B'],
                                                policy_names=['A', 'B'])
             exp.print()
+
+        return len(disagreement_states) if disagreement_states is not None else 0
 
 
 

@@ -3,9 +3,9 @@ import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from sklearn import tree
-from sklearn.gaussian_process.kernels import RBF
 from sklearn.preprocessing import MinMaxScaler
 
+from explanations.src.policy_util import predict_value, get_action_certainty
 from explanations.src.util import Trajectory
 
 
@@ -17,10 +17,10 @@ def get_pref_trajectories(policyA, policyB, env, max_traj_len, num_episodes=1000
         disagreement_states = [t1.traj[0][0] for t1, t2 in disagreement_traj]
         disagreement_outcomes = [(t1.traj[-1][0], t2.traj[-1][0]) for (t1, t2) in disagreement_traj]
 
-        Q_A, Q_B, Q_A_B, Q_B_A, Q_A_s, Q_B_s = get_Q_vals(policyA, policyB, env, disagreement_states, disagreement_outcomes)
+        Q_A, Q_B,  Q_A_s, Q_B_s = get_Q_vals(policyA, policyB, env, disagreement_states, disagreement_outcomes)
         state_importance = [get_state_importance(s, env, policyA, policyB) for s in disagreement_states]
 
-        scores = [get_traj_score(Q_A[i], Q_B[i], Q_A_B[i], Q_B_A[i], Q_A_s[i], Q_B_s[i], state_importance[i])
+        scores = [get_traj_score(Q_A[i], Q_B[i], Q_A_s[i], Q_B_s[i], state_importance[i])
                   for i in range(len(disagreement_traj))]
 
         filtered_traj = [t for i, t in enumerate(disagreement_traj) if scores[i]]
@@ -36,46 +36,44 @@ def get_pref_trajectories(policyA, policyB, env, max_traj_len, num_episodes=1000
 
 
 def get_Q_vals(policyA, policyB, env, disagreement_states, disagreement_outcomes):
-    Q_A = [policyA.predict_value(a, env.action_space) for a, b in disagreement_outcomes]
-    Q_B = [policyB.predict_value(b, env.action_space) for a, b in disagreement_outcomes]
+    Q_A = [predict_value(policyA, a) for a, b in disagreement_outcomes]
+    Q_B = [predict_value(policyB, b) for a, b in disagreement_outcomes]
 
-    Q_A_B = [policyA.predict_value(b, env.action_space) for a, b in disagreement_outcomes]
-    Q_B_A = [policyB.predict_value(a, env.action_space) for a, b in disagreement_outcomes]
+    Q_A_s = [predict_value(policyA, a) for a in disagreement_states]
+    Q_B_s = [predict_value(policyB, b) for b in disagreement_states]
 
-    Q_A_s = [policyA.predict_value(a, env.action_space) for a in disagreement_states]
-    Q_B_s = [policyB.predict_value(b, env.action_space) for b in disagreement_states]
+    scaler_A = MinMaxScaler(feature_range=[0, 1])
+    scaler_B = MinMaxScaler(feature_range=[0, 1])
+    scaler_A_s = MinMaxScaler(feature_range=[0, 1])
+    scaler_B_s = MinMaxScaler(feature_range=[0, 1])
 
-    scaler_A = MinMaxScaler(feature_range=[-1, 1])
-    scaler_B = MinMaxScaler(feature_range=[-1, 1])
+    scaler_A.fit([[min(Q_A)], [max(Q_A)]])
+    scaler_B.fit([[min(Q_B)], [max(Q_B)]])
 
-    scaler_A.fit([[min(Q_A + Q_A_B + Q_A_s)], [max(Q_A + Q_A_B + Q_A_s)]])
-    scaler_B.fit([[min(Q_B + Q_B_A + Q_B_s)], [max(Q_B + Q_B_A + Q_B_s)]])
+    scaler_A_s.fit([[min(Q_A_s)], [max(Q_A_s)]])
+    scaler_B_s.fit([[min(Q_B_s)], [max(Q_B_s)]])
 
     Q_A = [scaler_A.transform([[q_a]]).item() for q_a in Q_A]
     Q_B = [scaler_B.transform([[q_b]]).item() for q_b in Q_B]
 
-    Q_A_s = [scaler_A.transform([[s]]).item() for s in Q_A_s]
-    Q_B_s = [scaler_B.transform([[s]]).item() for s in Q_B_s]
+    Q_A_s = [scaler_A_s.transform([[s]]).item() for s in Q_A_s]
+    Q_B_s = [scaler_B_s.transform([[s]]).item() for s in Q_B_s]
 
-    Q_A_B = [scaler_A.transform([[s]]).item() for s in Q_A_B]
-    Q_B_A = [scaler_B.transform([[s]]).item() for s in Q_B_A]
-
-    return Q_A, Q_B, Q_A_B, Q_B_A, Q_A_s, Q_B_s
+    return Q_A, Q_B, Q_A_s, Q_B_s
 
 
 def get_state_importance(state, env, policyA, policyB):
-    importance_A = policyA.get_action_certainty(state, env.action_space)
-    importance_B = policyB.get_action_certainty(state, env.action_space)
+    importance_A = get_action_certainty(policyA, state)
+    importance_B = get_action_certainty(policyB, state)
 
     return (importance_A + importance_B).item() / 2
 
 
-def get_traj_score(Q_A, Q_B, Q_A_B, Q_B_A, Q_A_s, Q_B_s, state_importance):
+def get_traj_score(Q_A, Q_B, Q_A_s, Q_B_s, state_importance):
     traj_score = 1 - abs(Q_A - Q_B)
     state_disagreement = 1 - abs(Q_A_s - Q_B_s)
 
-    return (traj_score > 0.8) and (state_importance > 0.8) and (state_disagreement > 0.6)
-
+    return (traj_score > 0.9) and (state_importance > 0.9) and (state_disagreement > 0.9)
 
 
 def gather_contrasting_data(env, modelA, modelB, num_episodes=100, max_traj_len=10):

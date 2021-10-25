@@ -22,7 +22,7 @@ def seed_everything(seed=1):
     random.seed(seed_value)
     np.random.seed(seed_value)
     torch.manual_seed(seed_value)
-    tf.set_random_seed(seed_value)
+    tf.random.set_seed(seed_value)
     g = torch.Generator()
     g.manual_seed(seed_value)
 

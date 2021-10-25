@@ -1,3 +1,4 @@
+
 """
 Rocket trajectory optimization is a classic topic in Optimal Control.
 According to Pontryagin's maximum principle it's optimal to fire engine full throttle or
@@ -16,8 +17,10 @@ To play yourself, run:
 python examples/agents/keyboard_agent.py LunarLander-v2
 Created by Oleg Klimov. Licensed on the same terms as the rest of OpenAI Gym.
 """
-import copy
+
+
 import math
+import sys
 import numpy as np
 
 import Box2D
@@ -81,7 +84,7 @@ class LunarLander(gym.Env, EzPickle):
 
     continuous = False
 
-    def __init__(self, main_engine_penalty=0.3, side_engine_penalty=0.03, time_taken_penalty=0):
+    def __init__(self, main_engine_penalty=0.3):
         EzPickle.__init__(self)
         self.seed()
         self.viewer = None
@@ -93,12 +96,12 @@ class LunarLander(gym.Env, EzPickle):
 
         self.prev_reward = None
 
+        self.main_engine_penalty = main_engine_penalty
+
         # useful range is -1 .. +1, but spikes can be higher
         self.observation_space = spaces.Box(
             -np.inf, np.inf, shape=(8,), dtype=np.float32
         )
-
-        self.steps_elapsed = 0
 
         if self.continuous:
             # Action is two floats [main engine, left-right engines].
@@ -108,13 +111,6 @@ class LunarLander(gym.Env, EzPickle):
         else:
             # Nop, fire left engine, main engine, right engine
             self.action_space = spaces.Discrete(4)
-
-        self.main_engine_penalty = main_engine_penalty
-        self.side_engine_penalty = side_engine_penalty
-        self.time_taken_penalty = time_taken_penalty
-        self.scaler = None
-
-        self.reset()
 
     def seed(self, seed=None):
         self.np_random, seed = seeding.np_random(seed)
@@ -141,8 +137,6 @@ class LunarLander(gym.Env, EzPickle):
 
         W = VIEWPORT_W / SCALE
         H = VIEWPORT_H / SCALE
-
-        self.steps_elapsed = 0
 
         # terrain
         CHUNKS = 11
@@ -277,7 +271,7 @@ class LunarLander(gym.Env, EzPickle):
         dispersion = [self.np_random.uniform(-1.0, +1.0) / SCALE for _ in range(2)]
 
         m_power = 0.0
-        if (self.continuous and action[0] > 0.0) or (  # firing main engine
+        if (self.continuous and action[0] > 0.0) or (
             not self.continuous and action == 2
         ):
             # Main engine
@@ -372,9 +366,9 @@ class LunarLander(gym.Env, EzPickle):
         self.prev_shaping = shaping
 
         reward -= (
-            m_power * self.main_engine_penalty  # main power penalty
+            m_power * self.main_engine_penalty
         )  # less fuel spent is better, about -30 for heuristic landing
-        reward -= s_power * self.side_engine_penalty
+        reward -= s_power * 0.03
 
         done = False
         if self.game_over or abs(state[0]) >= 1.0:
@@ -382,11 +376,7 @@ class LunarLander(gym.Env, EzPickle):
             reward = -100
         if not self.lander.awake:
             done = True
-            reward = np.maximum(0, 100 + self.time_taken_penalty * self.steps_elapsed)
-            print("Landed successfully! Reward = {}".format(reward))
-
-        self.steps_elapsed += 1
-
+            reward = +100
         return np.array(state, dtype=np.float32), reward, done, {}
 
     def render(self, mode="human"):
@@ -451,40 +441,86 @@ class LunarLander(gym.Env, EzPickle):
             self.viewer.close()
             self.viewer = None
 
-    def get_obs(self):
-        pos = self.lander.position
-        vel = self.lander.linearVelocity
-        state = [
-            (pos.x - VIEWPORT_W / SCALE / 2) / (VIEWPORT_W / SCALE / 2),
-            (pos.y - (self.helipad_y + LEG_DOWN / SCALE)) / (VIEWPORT_H / SCALE / 2),
-            vel.x * (VIEWPORT_W / SCALE / 2) / FPS,
-            vel.y * (VIEWPORT_H / SCALE / 2) / FPS,
-            self.lander.angle,
-            20.0 * self.lander.angularVelocity / FPS,
-            1.0 if self.legs[0].ground_contact else 0.0,
-            1.0 if self.legs[1].ground_contact else 0.0,
-        ]
 
-        return state
+class LunarLanderContinuous(LunarLander):
+    continuous = True
 
-    def get_state(self):
-        return {'pos': copy.copy(self.lander.position),
-                'angle': copy.deepcopy(self.lander.angle),
-                'angularDamping': copy.deepcopy(self.lander.angularDamping),
-                'angularVelocity': copy.deepcopy(self.lander.angularVelocity),
-                'linearVelocity': copy.copy(self.lander.linearVelocity),
-                'inertia': copy.deepcopy(self.lander.inertia)}
 
-    def update_state(self, state):
-        self.lander.position = state['pos']
-        self.lander.angle = state['angle']
-        self.lander.angularDamping = state['angularDamping']
-        self.lander.angularVelocity = state['angularVelocity']
-        self.lander.linearVelocity = state['linearVelocity']
-        self.lander.inertia = state['inertia']
+def heuristic(env, s):
+    """
+    The heuristic for
+    1. Testing
+    2. Demonstration rollout.
+    Args:
+        env: The environment
+        s (list): The state. Attributes:
+                  s[0] is the horizontal coordinate
+                  s[1] is the vertical coordinate
+                  s[2] is the horizontal speed
+                  s[3] is the vertical speed
+                  s[4] is the angle
+                  s[5] is the angular speed
+                  s[6] 1 if first leg has contact, else 0
+                  s[7] 1 if second leg has contact, else 0
+    returns:
+         a: The heuristic to be fed into the step function defined above to determine the next step and reward.
+    """
 
-    def get_steps_elapsed(self):
-        return self.steps_elapsed
+    angle_targ = s[0] * 0.5 + s[2] * 1.0  # angle should point towards center
+    if angle_targ > 0.4:
+        angle_targ = 0.4  # more than 0.4 radians (22 degrees) is bad
+    if angle_targ < -0.4:
+        angle_targ = -0.4
+    hover_targ = 0.55 * np.abs(
+        s[0]
+    )  # target y should be proportional to horizontal offset
 
-    def set_steps_elapsed(self, steps):
-        self.steps_elapsed = steps
+    angle_todo = (angle_targ - s[4]) * 0.5 - (s[5]) * 1.0
+    hover_todo = (hover_targ - s[1]) * 0.5 - (s[3]) * 0.5
+
+    if s[6] or s[7]:  # legs have contact
+        angle_todo = 0
+        hover_todo = (
+            -(s[3]) * 0.5
+        )  # override to reduce fall speed, that's all we need after contact
+
+    if env.continuous:
+        a = np.array([hover_todo * 20 - 1, -angle_todo * 20])
+        a = np.clip(a, -1, +1)
+    else:
+        a = 0
+        if hover_todo > np.abs(angle_todo) and hover_todo > 0.05:
+            a = 2
+        elif angle_todo < -0.05:
+            a = 3
+        elif angle_todo > +0.05:
+            a = 1
+    return a
+
+
+def demo_heuristic_lander(env, seed=None, render=False):
+    env.seed(seed)
+    total_reward = 0
+    steps = 0
+    s = env.reset()
+    while True:
+        a = heuristic(env, s)
+        s, r, done, info = env.step(a)
+        total_reward += r
+
+        if render:
+            still_open = env.render()
+            if still_open == False:
+                break
+
+        if steps % 20 == 0 or done:
+            print("observations:", " ".join(["{:+0.2f}".format(x) for x in s]))
+            print("step {} total_reward {:+0.2f}".format(steps, total_reward))
+        steps += 1
+        if done:
+            break
+    if render:
+        env.close()
+    return total_reward
+
+
