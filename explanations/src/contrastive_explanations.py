@@ -19,6 +19,9 @@ def extract_feature_diff(outcome_pairs, feature_schema, agent_name, orig_policy_
     for i in range(n_features):
         feature_orig_vals = [outcome_orig[i].item() for outcome_orig, outcome_alt in outcome_pairs]
         feature_alt_vals = [outcome_alt[i].item() for outcome_orig, outcome_alt in outcome_pairs]
+        if feature_names[i].startswith('abs'):
+            feature_orig_vals = [abs(outcome_orig[i].item()) for outcome_orig, outcome_alt in outcome_pairs]
+            feature_alt_vals = [abs(outcome_alt[i].item()) for outcome_orig, outcome_alt in outcome_pairs]
 
         # see if feature in alternative scenario is larger or smaller on average than in original
         mean_diff = np.mean(feature_orig_vals) - np.mean(feature_alt_vals)

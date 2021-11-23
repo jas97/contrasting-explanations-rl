@@ -2,7 +2,7 @@ import json
 import numpy as np
 import heapq
 
-from explanations.src.util import append_to_json_file
+from explanations.src.util.util import append_to_json_file
 
 
 def extract_rules(tree, feature_schema, file, policy):

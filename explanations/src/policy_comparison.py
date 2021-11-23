@@ -5,11 +5,11 @@ from matplotlib import pyplot as plt
 from sklearn import tree
 from sklearn.preprocessing import MinMaxScaler
 
-from explanations.src.policy_util import predict_value, get_action_certainty
-from explanations.src.util import Trajectory
+from explanations.src.util.policy_util import predict_value, get_action_certainty, get_simulated_Q_vals
+from explanations.src.util.util import Trajectory
 
 
-def get_pref_trajectories(policyA, policyB, env, max_traj_len, num_episodes=1000, threshold=0.9):
+def get_pref_trajectories(policyA, policyB, env, max_traj_len, num_episodes=1000):
     disagreement_states, disagreement_traj = gather_contrasting_data(env, policyA, policyB, num_episodes, max_traj_len=max_traj_len)
     print('Total disagreements: {}'.format(len(disagreement_states)))
     if len(disagreement_states) > 0:
@@ -30,7 +30,6 @@ def get_pref_trajectories(policyA, policyB, env, max_traj_len, num_episodes=1000
 
         print('Number of preference traj pairs: {}'.format(len(filtered_traj)))
         return filtered_dis_states, filtered_traj, filtered_outcomes
-
     else:
         return disagreement_states, disagreement_traj, []
 
@@ -44,20 +43,18 @@ def get_Q_vals(policyA, policyB, env, disagreement_states, disagreement_outcomes
 
     scaler_A = MinMaxScaler(feature_range=[0, 1])
     scaler_B = MinMaxScaler(feature_range=[0, 1])
-    scaler_A_s = MinMaxScaler(feature_range=[0, 1])
-    scaler_B_s = MinMaxScaler(feature_range=[0, 1])
 
-    scaler_A.fit([[min(Q_A)], [max(Q_A)]])
-    scaler_B.fit([[min(Q_B)], [max(Q_B)]])
+    Q_A_simulated = get_simulated_Q_vals(policyA, env)
+    Q_B_simulated = get_simulated_Q_vals(policyB, env)
 
-    scaler_A_s.fit([[min(Q_A_s)], [max(Q_A_s)]])
-    scaler_B_s.fit([[min(Q_B_s)], [max(Q_B_s)]])
+    scaler_A.fit([[min(Q_A + Q_A_s + Q_A_simulated)], [max(Q_A + Q_A_s +  Q_A_simulated)]])
+    scaler_B.fit([[min(Q_B + Q_B_s + Q_B_simulated)], [max(Q_B + Q_B_s + Q_B_simulated)]])
 
     Q_A = [scaler_A.transform([[q_a]]).item() for q_a in Q_A]
     Q_B = [scaler_B.transform([[q_b]]).item() for q_b in Q_B]
 
-    Q_A_s = [scaler_A_s.transform([[s]]).item() for s in Q_A_s]
-    Q_B_s = [scaler_B_s.transform([[s]]).item() for s in Q_B_s]
+    Q_A_s = [scaler_A.transform([[s]]).item() for s in Q_A_s]
+    Q_B_s = [scaler_B.transform([[s]]).item() for s in Q_B_s]
 
     return Q_A, Q_B, Q_A_s, Q_B_s
 
@@ -73,7 +70,7 @@ def get_traj_score(Q_A, Q_B, Q_A_s, Q_B_s, state_importance):
     traj_score = 1 - abs(Q_A - Q_B)
     state_disagreement = 1 - abs(Q_A_s - Q_B_s)
 
-    return (traj_score > 0.9) and (state_importance > 0.9) and (state_disagreement > 0.9)
+    return (traj_score > 0.9) and (state_importance > 0.8) and (state_disagreement > 0.9)
 
 
 def gather_contrasting_data(env, modelA, modelB, num_episodes=100, max_traj_len=10):
@@ -81,9 +78,8 @@ def gather_contrasting_data(env, modelA, modelB, num_episodes=100, max_traj_len=
     disagreement_traj = []
 
     for i_ep in range(num_episodes):
-        obs = env.reset()
         done = False
-
+        env.reset()
         while not done:
             obs = env.get_obs()
             actionA, _ = modelA.predict(obs, deterministic=True)
@@ -240,12 +236,5 @@ def build_tree(df, feature_schema, output_file, feature_names):
     clf = clf.fit(features, target)
     tree.plot_tree(clf)
     plt.show()
-
-    # dot_data = tree.export_graphviz(clf,
-    #                                 out_file=None,
-    #                                 feature_names=feature_names + [policy_name]
-    #                                 )
-    # graph = graphviz.Source(dot_data)
-    # graph.render(output_file)
 
     return clf

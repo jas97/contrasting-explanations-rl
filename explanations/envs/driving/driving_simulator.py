@@ -57,8 +57,6 @@ class DrivingSimulator(gym.Env):
         self.action_space = gym.spaces.Discrete(5) # discretized action space
 
     def step(self, action):
-        # angle, acc = action
-        # angle = self.angle_scaler.inverse_transform([[angle]]).item()
         angle, acc = 0, 1
         if action == 0:
             acc = 1.1 # increase speed 10%
@@ -100,25 +98,13 @@ class DrivingSimulator(gym.Env):
         done = (self.steps_elapsed >= self.max_timesteps) or (car_distance > (1 - self.threshold))
 
         if not valid:
-            # print('Left the road')
             reward = -10
 
         if self.merged:
-            # done = (self.steps_elapsed >= 20) and self.merged
             if self.since_merged == 0:
-                # done = True
                 reward = 1000
-                # print('Merged successfully at step: {} with velocity: {} and distance to other car: {} y: {} y_non_autonomous: {}'.format(self.steps_elapsed,
-                #                                                                                                                           self.state[3],
-                #                                                                                                                           car_distance,
-                #                                                                                                                           self.state[1],
-                #                                                                                                                           self.state[6]))
 
             self.since_merged += 1
-            # if self.since_merged >= 1:  # TODO: fixed episode length
-            #     print('Driven successfully after merging. X: {}, Speed: {}, Heading: {} '.format(self.state[0], self.state[3], self.state[2]))
-            #     done = True
-            #     reward = +1
 
         if car_distance > (1 - self.threshold):
             reward = -1000

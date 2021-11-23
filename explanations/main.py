@@ -1,152 +1,81 @@
-import argparse
-from stable_baselines3 import SAC
-from stable_baselines3 import PPO
+import json
 
-from autorl4do.explanations.config.graphs import GRAPHS
-from autorl4do.explanations.envs.cancer_env.cancer_env import EnvCancer
-from autorl4do.explanations.envs.driving.driving_simulator import DrivingSimulator
-from autorl4do.explanations.envs.inventory.inventory_env import EnvInventory
-from autorl4do.explanations.envs.lunar_lander.lunar_lander import LunarLander
-from autorl4do.explanations.envs.vehicle_routing.vehicle_routing import VehicleRouting
-from autorl4do.explanations.evaluation import evaluate
-from autorl4do.explanations.explain import ExplainGen
-from autorl4do.explanations.policy_wrapper import PolicyWrapper
-from autorl4do.explanations.util import seed_everything
+import torch
+from stable_baselines3 import DQN
+from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.evaluation import evaluate_policy
+
+from explanations.envs.driving.driving_simulator import DrivingSimulator
+from explanations.src.experiment import experiment
+from explanations.src.util.util import seed_everything
+from explanations.src.visualizations import visualize
 
 
-def main():
-    seed_everything()
+def train(task, model_temp, min_reward, penalties, exploration_fractions, final_eps, n_timesteps, kwargs):
+    print('Running {}'.format(task))
+    # seed_everything()
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print('Device = {}'.format(device))
 
-    # parse command line arguments
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--task', type=str, default='inventory')
+    for p in penalties:
+        print('------------------ p = {} ------------------'.format(p))
+        model_0_path = model_temp.format(task, p)
 
-    args = parser.parse_args()
-    task = args.task
+        if task == 'driving':
+            env_p = DrivingSimulator(reward_weights={'car_distance': 5,  # CHANGED FROM 5
+                                                     'goal_distance': 10,
+                                                     'dev_from_init_vel': 20, # CHANGED FROM 0!!!
+                                                     'turn': 50,  # CHANGED FROM 0!!!
+                                                     'acc': 0,
+                                                     'progress': p})
 
-    print('Task: {}'.format(task))
+        done = False
+        for f in exploration_fractions:
+            for eps in final_eps:
+                for n in n_timesteps:
+                    if not done:
+                        print('Training f = {}, eps = {}, n = {}'.format(f, eps, n))
+                        check_env(env_p)
 
-    model_A_path = 'models/{}/model_A'.format(task)
-    model_B_path = 'models/{}/model_B'.format(task)
+                        model_0 = DQN('MlpPolicy',
+                                      env=env_p,
+                                      device=device,
+                                      exploration_fraction=f,
+                                      exploration_final_eps=eps,
+                                      verbose=0,
+                                      **kwargs)
 
-    modelA = PolicyWrapper()
-    modelB = PolicyWrapper()
-    modelA.lib = 'sb'
-    modelB.lib = 'sb'
+                        model_0.learn(total_timesteps=n)
+                        print('Finished training')
 
-    if task == 'inventory':
-        feature_names = ['inventory', 'demand']
+                        mean_rew, _ = evaluate_policy(model_0, env_p, n_eval_episodes=1000, deterministic=True)
 
-        envA = EnvInventory(stock_penalty=1, shipment_penalty=10)
-        modelA.model = SAC("MlpPolicy", envA, verbose=1)
-        envB = EnvInventory(stock_penalty=1, shipment_penalty=0)
-        modelB.model = SAC("MlpPolicy", envB, verbose=1)
-        max_traj_len = 10
-        step = 10
-        treatment = 'A'
-    elif task == 'cancer':
-        feature_names = ['C', 'P', 'Q', 'Qp']
+                        print('p = {}, f = {}, eps = {}, n = {}, reward = {}'.format(p, f, eps, n, mean_rew))
 
-        envA = EnvCancer(penalty=[1, 0], transition_noise=0.1)
-        modelA.model = PPO("MlpPolicy", envA, verbose=1)
-        envB = EnvCancer(penalty=[1, 0.3], transition_noise=0.1)
-        modelB.model = PPO("MlpPolicy", envB, verbose=1)
-        max_traj_len = 10
-        step = None
-        treatment = 'C'
-    elif task == 'driving':
-        envA = DrivingSimulator(reward_weights={'car_distance': -100,
-                                                'goal_distance': -1,
-                                                'dev_from_init_vel': 0,
-                                                'turn': -50,
-                                                'acc': 0,
-                                                'progress': -1})
-        modelA.model = SAC("MlpPolicy", envA, verbose=1, learning_starts=40000)
-        envB = DrivingSimulator(reward_weights={'car_distance': -1,
-                                                'goal_distance': -1,
-                                                'dev_from_init_vel': 0,
-                                                'turn': -50,
-                                                'acc': 0,
-                                                'progress': -10})
-        modelB.model = SAC("MlpPolicy", envB, verbose=1, learning_starts=40000)
-        feature_names = ['x', 'y', 'heading', 'speed', 'steering wheel angle']
-        max_traj_len = 10
-        step = 0.1
-        treatment = ''
-    elif task == 'vehicle-routing':
-        envA = VehicleRouting(grid=(10, 10), order_miss_penalty=50)  # lower penaly --> should take more risks
-        modelA.model = PPO('MlpPolicy', envA, verbose=1)
-        envB = VehicleRouting(grid=(10, 10), order_miss_penalty=1000)  # higher penalty --> only pick up orders if sure
-        modelB.model = PPO('MlpPolicy', envB, verbose=1)
-        feature_names = []
-        max_traj_len = 100
-        step = None
-    elif task == 'lunar-lander':
-        envA = LunarLander(main_engine_penalty=0.3, side_engine_penalty=0.03, time_taken_penalty=0)
-        modelA.model = PPO('MlpPolicy', envA, verbose=1)
-        envB = LunarLander(main_engine_penalty=5, side_engine_penalty=0.03, time_taken_penalty=0)
-        modelB.model = PPO('MlpPolicy', envB, verbose=1)
-        feature_names = ['x', 'y', 'vel_x', 'vel_y', 'angle', 'ang_vel', 'left_leg', 'right_leg']
-        max_traj_len = 30
-        step = None
-        treatment = 'main_engine'
-    else:
-        raise ValueError('Task {} is not supported. Supported tasks are inventory, cancer and driving')
-
-    modelA.set_env(envA)
-    modelB.set_env(envB)
-    try:
-        if task == 'cancer' or task == 'lunar-lander':
-            modelA.model = PPO.load(model_A_path)
-            modelB.model = PPO.load(model_B_path)
-            print('Loaded trained models')
-        elif task == 'driving' or task == 'inventory':
-            modelA.model = SAC.load(model_A_path)
-            modelB.model = SAC.load(model_B_path)
-            print('Loaded trained models')
-    except FileNotFoundError:
-        print('Failed loading trained models. Starting training')
-        modelA.model.learn(total_timesteps=100000)
-        modelB.model.learn(total_timesteps=100000)
-        modelA.model.save(model_A_path)
-        modelB.model.save(model_B_path)
-
-    obs=envA.reset()
-    done = False
-    actions = [0,0,0,0]
-    while not done:
-        action, _ = modelA.model.predict(obs)
-        envA.render()
-        print('Obs: {}'.format(obs))
-        print('Action: {}'.format(action))
-        obs, rew, done, _ = envA.step(action)
-        print('Reward: {}'.format(rew))
-        actions[action] += 1
-    envA.close()
-
-    print("Actions: {}".format(actions))
-
-    obs = envB.reset()
-    done = False
-    actions = [0, 0, 0, 0]
-    while not done:
-        action, _ = modelB.model.predict(obs)
-        envB.render()
-        print('Obs: {}'.format(obs))
-        print('Action: {}'.format(action))
-        obs, rew, done, _ = envB.step(action)
-        print('Reward: {}'.format(rew))
-        actions[action] += 1
-    envB.close()
-
-    print("Actions: {}".format(actions))
-
-    exp_gen = ExplainGen(task, feature_names)
-    exp_gen.explain(envA, modelA, modelB, max_traj_len, num_episodes=10000, step=step, exp_type='explanations')
-
-    # eval = evaluate(envA, GRAPHS[task], feature_names, treatment, action_names=['left_engine', 'main_engine', 'right_engine'], expected_rel=expected_rel)
-    # print('Evaluation: {}'.format(eval))
+                        if mean_rew > min_reward:
+                            print('Good model for p = {} reward = {}'.format(p, mean_rew))
+                            model_0.save(model_0_path)
+                            done = True
 
 
 if __name__ == '__main__':
-    main()
+    seed_everything()
+    tasks = ['driving']
+    settings_file_temp = 'settings/{}.json'
+
+    for i, task in enumerate(tasks):
+        model_path = 'models/{}/experiments_main'.format(task)
+        model_0_path = model_path + '/model_dqn_0_{}'
+        model_1_path = model_path + '/model_dqn_1_{}'
+
+        with open(settings_file_temp.format(task), 'r') as j:
+            settings = json.loads(j.read())
+
+        # train(task, model_0_path, settings['min_reward'], settings['penalties'], settings['exploration_fraction'],
+        #       settings['final_eps'], settings['n_timesteps'], settings['training_args'][0])
+        # train(task, model_1_path, settings['min_reward'], settings['penalties'], settings['exploration_fraction'],
+        #       settings['final_eps'], settings['n_timesteps'], settings['training_args'][0])
+        #
+        experiment(task, model_path, settings['penalties'], settings['max_traj_len'], settings['feature_names'])
+
+        visualize(task, model_path, settings['penalties'], settings['max_traj_len'])
